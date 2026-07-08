@@ -29,6 +29,8 @@ The asset repository also includes `manifest.json` and `checksums.sha256` for fi
 
 The demo data use proxy geological volumes from the same regional modeling context as the study. The original commercial model data are not distributed with this release.
 
+The demo data and pretrained checkpoints are licensed separately under CC BY-NC 4.0 for non-commercial research and educational use.
+
 Expected inputs:
 
 - `dataset/model.npy`: semantic geological labels, shape `[X, Y, Z]`.
@@ -82,7 +84,9 @@ The viewer loads Three.js from a CDN, so direct HTML use requires internet acces
 
 ## License
 
-This code is released under the MIT License. See `LICENSE`.
+The source code in this repository is released under the MIT License. See `LICENSE`.
+
+The demo data and pretrained model checkpoints hosted at https://huggingface.co/datasets/snipervx/StructGeoFlow are licensed separately under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0). Commercial use of those assets requires prior written permission from the authors.
 
 ## Code Availability
 

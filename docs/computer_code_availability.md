@@ -18,10 +18,12 @@ Program size: The released source code excludes internal model weights, generate
 
 Source code repository: https://github.com/StructGeoFlow-Project/StructGeoFlow
 
-Open-source license: MIT.
+Open-source license: MIT for the source code.
+
+Demo data and checkpoint license: Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0). Commercial use of the demo data and pretrained checkpoints requires prior written permission from the authors.
 
 Release version or tag: v0.1.0 after the first public tag is created.
 
 Included reproducibility assets: README, user instructions, inference source code, model architecture definitions, demo inference entry point, and voxel viewer.
 
-Demo data and model weights: Not included in this minimal source repository. Local defaults expect demo data under `dataset/` and model files under `models/`. The released demo assets are available at https://huggingface.co/datasets/snipervx/StructGeoFlow.
+Demo data and model weights: Not included in this minimal source repository. Local defaults expect demo data under `dataset/` and model files under `models/`. The released demo assets are available at https://huggingface.co/datasets/snipervx/StructGeoFlow under CC BY-NC 4.0.

@@ -1,0 +1,1254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StructGeoFlow NPY Viewer</title>
+  <link rel="icon" href="data:,">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    const GEO_LAYER_PALETTE_HEX = [
+      0xffffff,
+      0xffe599,
+      0xe69138,
+      0xcccccc,
+      0x6d8e6d,
+      0x678394,
+      0x7a0000,
+      0x444444,
+    ];
+
+    const state = {
+      volume: null,
+      renderer: null,
+      scene: null,
+      camera: null,
+      controls: null,
+      volumeGroup: null,
+      bounds: null,
+      renderObject: null,
+      boxObject: null,
+      gridObject: null,
+      axesObject: null,
+    };
+
+    const els = {};
+
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function collectElements() {
+      [
+        "fileInput", "dropZone", "statusText", "fileName", "shapeText", "dtypeText",
+        "rangeText", "renderStats", "channelSelect", "colorMode", "viewMode",
+        "sliceAxis", "sliceIndex", "sliceValue", "hideZero", "showGrid",
+        "resetView", "legend", "canvas",
+      ].forEach((id) => {
+        els[id] = byId(id);
+      });
+    }
+
+    function initThree() {
+      THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas: els.canvas,
+        antialias: true,
+        alpha: false,
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.setClearColor(0x151920, 1);
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x151920, 28, 60);
+
+      const camera = new THREE.PerspectiveCamera(52, 1, 0.01, 1000);
+      camera.up.set(0, 0, 1);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.screenSpacePanning = false;
+
+      const volumeGroup = new THREE.Group();
+      scene.add(volumeGroup);
+
+      const hemi = new THREE.HemisphereLight(0xf3f7ff, 0x1c2432, 1.4);
+      scene.add(hemi);
+
+      const key = new THREE.DirectionalLight(0xffffff, 1.25);
+      key.position.set(8, -6, 9);
+      scene.add(key);
+
+      state.renderer = renderer;
+      state.scene = scene;
+      state.camera = camera;
+      state.controls = controls;
+      state.volumeGroup = volumeGroup;
+
+      window.addEventListener("resize", resizeRenderer);
+      resizeRenderer();
+      resetCamera();
+      animate();
+    }
+
+    function resizeRenderer() {
+      if (!state.renderer || !state.camera) return;
+      const rect = els.canvas.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      state.renderer.setSize(width, height, false);
+      state.camera.aspect = width / height;
+      state.camera.updateProjectionMatrix();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      state.controls?.update();
+      state.renderer?.render(state.scene, state.camera);
+    }
+
+    function setStatus(message, isError = false) {
+      els.statusText.textContent = message;
+      els.statusText.dataset.state = isError ? "error" : "ok";
+    }
+
+    function resetCamera() {
+      const maxDim = state.bounds?.maxDim || 12;
+      const distance = Math.max(16, maxDim * 1.9);
+      if (state.volume && els.viewMode?.value === "slice") {
+        const axis = els.sliceAxis?.value || "z";
+        if (axis === "x") {
+          state.camera.position.set(distance, 0, distance * 0.02);
+        } else if (axis === "y") {
+          state.camera.position.set(0, -distance, distance * 0.02);
+        } else {
+          state.camera.position.set(0, -distance * 0.02, distance);
+        }
+      } else {
+        state.camera.position.set(distance, -distance * 1.05, distance * 0.82);
+      }
+      state.camera.lookAt(0, 0, 0);
+      state.controls.target.set(0, 0, 0);
+      state.controls.update();
+    }
+
+    function disposeObject(obj) {
+      if (!obj) return;
+      obj.traverse?.((child) => {
+        child.geometry?.dispose?.();
+        const material = child.material;
+        if (Array.isArray(material)) {
+          material.forEach((m) => m?.dispose?.());
+        } else {
+          material?.dispose?.();
+        }
+      });
+      obj.parent?.remove?.(obj);
+    }
+
+    function clearVolume() {
+      disposeObject(state.renderObject);
+      disposeObject(state.boxObject);
+      disposeObject(state.gridObject);
+      disposeObject(state.axesObject);
+      state.renderObject = null;
+      state.boxObject = null;
+      state.gridObject = null;
+      state.axesObject = null;
+    }
+
+    function parseNpy(u8) {
+      if (u8.length < 16) {
+        throw new Error("The NPY file is too short.");
+      }
+      const magic = String.fromCharCode(...u8.subarray(0, 6));
+      if (magic !== "\u0093NUMPY") {
+        throw new Error("The selected file is not a valid NPY file.");
+      }
+      const major = u8[6];
+      const decoder = new TextDecoder(major >= 3 ? "utf-8" : "latin1");
+      const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+      let headerLen;
+      let headerOffset;
+      if (major === 1) {
+        headerLen = dv.getUint16(8, true);
+        headerOffset = 10;
+      } else {
+        headerLen = dv.getUint32(8, true);
+        headerOffset = 12;
+      }
+      const header = decoder.decode(u8.subarray(headerOffset, headerOffset + headerLen));
+      const descr = readHeaderValue(header, /'descr':\s*'([^']+)'/);
+      const fortranOrder = readHeaderValue(header, /'fortran_order':\s*(True|False)/) === "True";
+      const shapeText = readHeaderValue(header, /'shape':\s*\(([^)]*)\)/).trim();
+      const shape = shapeText.length === 0
+        ? []
+        : shapeText.split(",").map((v) => v.trim()).filter(Boolean).map(Number);
+
+      if (fortranOrder) {
+        throw new Error("Fortran-order NPY arrays are not supported.");
+      }
+      if (!shape.every((v) => Number.isInteger(v) && v > 0)) {
+        throw new Error("The NPY shape is invalid.");
+      }
+      if (![3, 4].includes(shape.length)) {
+        throw new Error("Only [X,Y,Z], [C,X,Y,Z], and [X,Y,Z,C] arrays are supported.");
+      }
+
+      const count = shape.reduce((a, b) => a * b, 1);
+      const dataOffset = headerOffset + headerLen;
+      const data = createTypedArrayByDescr(descr, u8.buffer, u8.byteOffset + dataOffset, count);
+      return { descr, shape, data };
+    }
+
+    function readHeaderValue(header, regex) {
+      const match = header.match(regex);
+      if (!match) {
+        throw new Error("The NPY header is missing a required field.");
+      }
+      return match[1];
+    }
+
+    function createTypedArrayByDescr(descr, buffer, byteOffset, count) {
+      switch (descr) {
+        case "<f2":
+          return decodeFloat16ToFloat32Array(buffer, byteOffset, count);
+        case "<f4":
+          return new Float32Array(buffer, byteOffset, count);
+        case "<f8":
+          return new Float64Array(buffer, byteOffset, count);
+        case "|u1":
+        case "<u1":
+          return new Uint8Array(buffer, byteOffset, count);
+        case "|i1":
+        case "<i1":
+          return new Int8Array(buffer, byteOffset, count);
+        case "<u2":
+          return new Uint16Array(buffer, byteOffset, count);
+        case "<i2":
+          return new Int16Array(buffer, byteOffset, count);
+        case "<u4":
+          return new Uint32Array(buffer, byteOffset, count);
+        case "<i4":
+          return new Int32Array(buffer, byteOffset, count);
+        case "|b1":
+          return new Uint8Array(buffer, byteOffset, count);
+        default:
+          throw new Error(`Unsupported NPY dtype: ${descr}`);
+      }
+    }
+
+    function decodeFloat16ToFloat32Array(buffer, byteOffset, count) {
+      const src = new Uint16Array(buffer, byteOffset, count);
+      const out = new Float32Array(count);
+      for (let i = 0; i < count; i++) {
+        out[i] = float16ToFloat32(src[i]);
+      }
+      return out;
+    }
+
+    function float16ToFloat32(h) {
+      const sign = (h & 0x8000) ? -1 : 1;
+      const exp = (h >> 10) & 0x1f;
+      const frac = h & 0x03ff;
+      if (exp === 0) {
+        return frac === 0 ? sign * 0 : sign * Math.pow(2, -14) * (frac / 1024);
+      }
+      if (exp === 31) {
+        return frac === 0 ? sign * Infinity : NaN;
+      }
+      return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+    }
+
+    function makeVolume(npy, fileName) {
+      const shape = npy.shape.map(Number);
+      let layout = "xyz";
+      let channelCount = 1;
+      let spatialShape = shape.slice();
+
+      if (shape.length === 4) {
+        if (shape[0] <= 16) {
+          layout = "channel_first";
+          channelCount = shape[0];
+          spatialShape = shape.slice(1);
+        } else if (shape[3] <= 16) {
+          layout = "channel_last";
+          channelCount = shape[3];
+          spatialShape = shape.slice(0, 3);
+        } else {
+          throw new Error("4D arrays must use [C,X,Y,Z] or [X,Y,Z,C] with C <= 16.");
+        }
+      }
+
+      const volume = {
+        fileName,
+        dtype: npy.descr,
+        shape,
+        data: npy.data,
+        layout,
+        channelCount,
+        channelNames: inferChannelNames(channelCount),
+        channelKinds: inferChannelKinds(channelCount),
+        spatialShape,
+        isInteger: isIntegerArray(npy.data),
+      };
+      volume.channelStats = sampleChannelStats(volume);
+      volume.min = Math.min(...volume.channelStats.map((stats) => stats.min));
+      volume.max = Math.max(...volume.channelStats.map((stats) => stats.max));
+      return volume;
+    }
+
+    function isIntegerArray(data) {
+      return data instanceof Uint8Array
+        || data instanceof Int8Array
+        || data instanceof Uint16Array
+        || data instanceof Int16Array
+        || data instanceof Uint32Array
+        || data instanceof Int32Array;
+    }
+
+    function sampleStats(data) {
+      if (!data || data.length === 0) return { min: 0, max: 0 };
+      const stride = Math.max(1, Math.floor(data.length / 500000));
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < data.length; i += stride) {
+        const value = Number(data[i]);
+        if (!Number.isFinite(value)) continue;
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 0 };
+      return { min, max };
+    }
+
+    function sampleChannelStats(volume) {
+      if (volume.channelCount <= 1) {
+        return [sampleStats(volume.data)];
+      }
+      const [nx, ny, nz] = volume.spatialShape;
+      const voxelCount = nx * ny * nz;
+      const stride = Math.max(1, Math.floor(voxelCount / 300000));
+      const stats = [];
+      for (let c = 0; c < volume.channelCount; c++) {
+        let min = Infinity;
+        let max = -Infinity;
+        for (let idx = 0; idx < voxelCount; idx += stride) {
+          const x = Math.floor(idx / (ny * nz));
+          const rem = idx - x * ny * nz;
+          const y = Math.floor(rem / nz);
+          const z = rem - y * nz;
+          const value = valueAt(volume, x, y, z, c);
+          if (!Number.isFinite(value)) continue;
+          if (value < min) min = value;
+          if (value > max) max = value;
+        }
+        stats.push(Number.isFinite(min) && Number.isFinite(max) ? { min, max } : { min: 0, max: 0 });
+      }
+      return stats;
+    }
+
+    function inferChannelNames(channelCount) {
+      if (channelCount === 3) {
+        return ["Semantic labels", "Fault mask", "Condition voxels"];
+      }
+      return Array.from({ length: channelCount }, (_unused, idx) => `Channel ${idx}`);
+    }
+
+    function inferChannelKinds(channelCount) {
+      if (channelCount === 3) {
+        return ["semantic", "fault", "condition"];
+      }
+      return Array.from({ length: channelCount }, () => "generic");
+    }
+
+    function valueAt(volume, x, y, z, channel) {
+      const [nx, ny, nz] = volume.spatialShape;
+      if (volume.layout === "channel_first") {
+        return Number(volume.data[((channel * nx + x) * ny + y) * nz + z]);
+      }
+      if (volume.layout === "channel_last") {
+        return Number(volume.data[((x * ny + y) * nz + z) * volume.channelCount + channel]);
+      }
+      return Number(volume.data[(x * ny + y) * nz + z]);
+    }
+
+    function updateVolumeUi(volume) {
+      els.fileName.textContent = volume.fileName;
+      els.shapeText.textContent = `[${volume.shape.join(", ")}]`;
+      els.dtypeText.textContent = volume.dtype;
+
+      els.channelSelect.innerHTML = "";
+      for (let i = 0; i < volume.channelCount; i++) {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = volume.channelNames[i] || `Channel ${i}`;
+        els.channelSelect.appendChild(opt);
+      }
+      els.channelSelect.value = "0";
+      els.channelSelect.disabled = volume.channelCount <= 1;
+
+      const [_nx, _ny, nz] = volume.spatialShape;
+      els.viewMode.value = "volume";
+      els.sliceAxis.value = "z";
+      updateSliceSlider();
+      els.sliceIndex.value = String(Math.floor(Math.max(0, nz - 1) / 2));
+      els.sliceValue.textContent = els.sliceIndex.value;
+      syncChannelUi(true);
+    }
+
+    function updateSliceSlider() {
+      const volume = state.volume;
+      if (!volume) return;
+      const axis = els.sliceAxis.value;
+      const [nx, ny, nz] = volume.spatialShape;
+      const maxByAxis = { x: nx - 1, y: ny - 1, z: nz - 1 };
+      const max = Math.max(0, maxByAxis[axis] ?? nz - 1);
+      const current = Math.min(Number(els.sliceIndex.value) || 0, max);
+      els.sliceIndex.max = String(max);
+      els.sliceIndex.value = String(current);
+      els.sliceValue.textContent = String(current);
+    }
+
+    function formatNumber(value) {
+      if (!Number.isFinite(value)) return "n/a";
+      if (Math.abs(value) >= 1000 || Math.abs(value) < 0.001 && value !== 0) {
+        return value.toExponential(3);
+      }
+      return Number(value.toFixed(4)).toString();
+    }
+
+    function activeChannelIndex() {
+      return Number(els.channelSelect.value) || 0;
+    }
+
+    function activeChannelKind() {
+      const volume = state.volume;
+      return volume?.channelKinds?.[activeChannelIndex()] || "generic";
+    }
+
+    function activeChannelStats() {
+      const volume = state.volume;
+      return volume?.channelStats?.[activeChannelIndex()] || { min: volume?.min ?? 0, max: volume?.max ?? 1 };
+    }
+
+    function syncChannelUi(applyDefaultColorMode = false) {
+      const volume = state.volume;
+      if (!volume) return;
+      const stats = activeChannelStats();
+      els.rangeText.textContent = `${formatNumber(stats.min)} to ${formatNumber(stats.max)}`;
+      if (applyDefaultColorMode) {
+        const kind = activeChannelKind();
+        els.colorMode.value = kind === "fault" || !volume.isInteger ? "scalar" : "semantic";
+      }
+      buildLegend();
+    }
+
+    function setupBounds(volume) {
+      const [nx, ny, nz] = volume.spatialShape;
+      const maxSide = Math.max(nx, ny, nz, 1);
+      const scale = 12 / maxSide;
+      state.bounds = { nx, ny, nz, scale, maxDim: 12 };
+
+      const gridSize = Math.max(nx, ny) * scale;
+      const divisions = Math.min(32, Math.max(4, Math.round(Math.max(nx, ny) / 8)));
+      const grid = new THREE.GridHelper(gridSize, divisions, 0x415064, 0x2b3440);
+      grid.rotation.x = Math.PI / 2;
+      grid.position.z = (-nz * 0.5) * scale;
+      state.gridObject = grid;
+      state.scene.add(grid);
+
+      const axes = new THREE.AxesHelper(Math.max(2.2, gridSize * 0.15));
+      axes.position.set((-nx * 0.52) * scale, (-ny * 0.52) * scale, (-nz * 0.52) * scale);
+      state.axesObject = axes;
+      state.scene.add(axes);
+
+      const box = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(nx * scale, ny * scale, nz * scale)),
+        new THREE.LineBasicMaterial({ color: 0x8aa1b8, transparent: true, opacity: 0.58 })
+      );
+      state.boxObject = box;
+      state.scene.add(box);
+    }
+
+    function colorForValue(value, mode, min, max, channelKind) {
+      if (mode === "semantic") {
+        let idx = Math.max(0, Math.trunc(Number(value) || 0));
+        if (channelKind === "condition") {
+          idx = Math.max(0, idx - 1);
+        }
+        const hex = GEO_LAYER_PALETTE_HEX[idx] ?? hashLabelColor(idx);
+        const color = new THREE.Color(hex);
+        return boostDisplayColor([color.r, color.g, color.b]);
+      }
+      return turboColor((Number(value) - min) / Math.max(max - min, 1e-9));
+    }
+
+    function boostDisplayColor(rgb) {
+      return rgb.map((v) => Math.min(1, Math.pow(Math.max(0, v), 0.74) * 1.14));
+    }
+
+    function createVoxelMaterial(opts) {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uShowGrid: { value: opts.showGrid ? 1.0 : 0.0 },
+          uBrightness: { value: 1.0 },
+          uGridColor: { value: new THREE.Color(0x111923) },
+        },
+        vertexShader: `
+          varying vec3 vColor;
+          varying vec3 vLocalPos;
+
+          void main() {
+            vColor = instanceColor;
+            vLocalPos = position;
+            vec4 worldPosition = modelMatrix * instanceMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * viewMatrix * worldPosition;
+          }
+        `,
+        fragmentShader: `
+          uniform float uShowGrid;
+          uniform float uBrightness;
+          uniform vec3 uGridColor;
+          varying vec3 vColor;
+          varying vec3 vLocalPos;
+
+          void main() {
+            vec3 faceDistance = 0.5 - abs(vLocalPos);
+            vec3 edgeMask = 1.0 - smoothstep(vec3(0.006), vec3(0.032), faceDistance);
+            float edge = max(max(min(edgeMask.x, edgeMask.y), min(edgeMask.x, edgeMask.z)), min(edgeMask.y, edgeMask.z));
+            vec3 baseColor = clamp(vColor * uBrightness, 0.0, 1.0);
+            vec3 finalColor = mix(baseColor, uGridColor, edge * 0.78 * uShowGrid);
+            gl_FragColor = vec4(finalColor, 1.0);
+          }
+        `,
+        transparent: false,
+        depthWrite: true,
+        depthTest: true,
+        toneMapped: false,
+      });
+    }
+
+    function hashLabelColor(idx) {
+      const hue = ((idx * 47) % 360) / 360;
+      const color = new THREE.Color();
+      color.setHSL(hue, 0.58, 0.56);
+      return color.getHex();
+    }
+
+    function turboColor(t) {
+      const x = Math.max(0, Math.min(1, Number(t) || 0));
+      const x2 = x * x;
+      const x3 = x2 * x;
+      const x4 = x3 * x;
+      const x5 = x4 * x;
+      return [
+        clamp01(0.13572138 + 4.6153926 * x - 42.66032258 * x2 + 132.13108234 * x3 - 152.94239396 * x4 + 59.28637943 * x5),
+        clamp01(0.09140261 + 2.19418839 * x + 4.84296658 * x2 - 14.18503333 * x3 + 4.27729857 * x4 + 2.82956604 * x5),
+        clamp01(0.1066733 + 12.64194608 * x - 60.58204836 * x2 + 110.36276771 * x3 - 89.90310912 * x4 + 27.34824973 * x5),
+      ];
+    }
+
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
+    }
+
+    function renderVolume() {
+      const volume = state.volume;
+      if (!volume) return;
+      disposeObject(state.renderObject);
+      state.renderObject = null;
+
+      const opts = getRenderOptions();
+      const build = buildVoxelBuffers(volume, opts);
+      if (build.count <= 0) {
+        els.renderStats.textContent = `0 voxels, stride ${build.stride}`;
+        setStatus("No visible voxels with the current filters.");
+        return;
+      }
+      const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+      const vertexColors = new Float32Array(cubeGeometry.attributes.position.count * 3);
+      vertexColors.fill(1.0);
+      cubeGeometry.setAttribute("color", new THREE.BufferAttribute(vertexColors, 3));
+      const cubeMaterial = createVoxelMaterial(opts);
+      const mesh = new THREE.InstancedMesh(cubeGeometry, cubeMaterial, build.count);
+      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+      const dummy = new THREE.Object3D();
+      const color = new THREE.Color();
+      for (let i = 0; i < build.count; i++) {
+        const p = i * 3;
+        dummy.position.set(build.positions[p], build.positions[p + 1], build.positions[p + 2]);
+        dummy.scale.set(build.cubeSize, build.cubeSize, build.cubeSize);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        color.setRGB(build.colors[p], build.colors[p + 1], build.colors[p + 2]);
+        mesh.setColorAt(i, color);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) {
+        mesh.instanceColor.needsUpdate = true;
+      }
+
+      state.renderObject = mesh;
+      state.volumeGroup.add(mesh);
+
+      els.renderStats.textContent = `${build.count.toLocaleString()} voxels, stride ${build.stride}`;
+      setStatus("Ready.");
+    }
+
+    function getRenderOptions() {
+      return {
+        channel: Number(els.channelSelect.value) || 0,
+        colorMode: els.colorMode.value,
+        viewMode: els.viewMode.value,
+        axis: els.sliceAxis.value,
+        slice: Number(els.sliceIndex.value) || 0,
+        hideZero: els.hideZero.checked,
+        showGrid: els.showGrid.checked,
+        stride: 1,
+        voxelFill: 1.0,
+      };
+    }
+
+    function buildVoxelBuffers(volume, opts) {
+      const [nx, ny, nz] = volume.spatialShape;
+      const scale = state.bounds.scale;
+      const baseStride = opts.stride;
+
+      const positions = [];
+      const colors = [];
+      const stats = activeChannelStats();
+      const colorMin = stats.min;
+      const colorMax = stats.max;
+      const channelKind = activeChannelKind();
+      let count = 0;
+
+      const pushVoxel = (x, y, z, value) => {
+        const color = colorForValue(value, opts.colorMode, colorMin, colorMax, channelKind);
+        positions.push(
+          (x - (nx - 1) * 0.5) * scale,
+          (y - (ny - 1) * 0.5) * scale,
+          (z - (nz - 1) * 0.5) * scale,
+        );
+        colors.push(color[0], color[1], color[2]);
+        count += 1;
+      };
+
+      const consider = (x, y, z) => {
+        const value = valueAt(volume, x, y, z, opts.channel);
+        if (!Number.isFinite(value)) return;
+        if (opts.hideZero && Math.abs(value) < 1e-12) return;
+        pushVoxel(x, y, z, value);
+      };
+
+      if (opts.viewMode === "slice") {
+        const idx = Math.max(0, Math.floor(opts.slice));
+        if (opts.axis === "x") {
+          const x = Math.min(nx - 1, idx);
+          for (let y = 0; y < ny; y += baseStride) {
+            for (let z = 0; z < nz; z += baseStride) consider(x, y, z);
+          }
+        } else if (opts.axis === "y") {
+          const y = Math.min(ny - 1, idx);
+          for (let x = 0; x < nx; x += baseStride) {
+            for (let z = 0; z < nz; z += baseStride) consider(x, y, z);
+          }
+        } else {
+          const z = Math.min(nz - 1, idx);
+          for (let x = 0; x < nx; x += baseStride) {
+            for (let y = 0; y < ny; y += baseStride) consider(x, y, z);
+          }
+        }
+      } else {
+        for (let x = 0; x < nx; x += baseStride) {
+          for (let y = 0; y < ny; y += baseStride) {
+            for (let z = 0; z < nz; z += baseStride) consider(x, y, z);
+          }
+        }
+      }
+
+      return {
+        positions: new Float32Array(positions),
+        colors: new Float32Array(colors),
+        count,
+        stride: baseStride,
+        cubeSize: scale * baseStride * opts.voxelFill,
+      };
+    }
+
+    function buildLegend() {
+      els.legend.innerHTML = "";
+      if (els.colorMode.value === "scalar") {
+        const stats = activeChannelStats();
+        const row = document.createElement("div");
+        row.className = "scalar-bar";
+        els.legend.appendChild(row);
+        const labels = document.createElement("div");
+        labels.className = "legend-range";
+        labels.innerHTML = `<span>${formatNumber(stats.min)}</span><span>${formatNumber(stats.max)}</span>`;
+        els.legend.appendChild(labels);
+        return;
+      }
+      const isCondition = activeChannelKind() === "condition";
+      GEO_LAYER_PALETTE_HEX.forEach((hex, idx) => {
+        const item = document.createElement("div");
+        item.className = "legend-item";
+        const swatch = document.createElement("span");
+        swatch.className = "swatch";
+        const color = new THREE.Color(hex);
+        const boosted = boostDisplayColor([color.r, color.g, color.b]);
+        swatch.style.backgroundColor = `rgb(${boosted.map((v) => Math.round(v * 255)).join(",")})`;
+        const label = document.createElement("span");
+        label.textContent = isCondition ? `Known label ${idx}` : `Label ${idx}`;
+        item.append(swatch, label);
+        els.legend.appendChild(item);
+      });
+    }
+
+    async function loadFile(file) {
+      if (!file) return;
+      const name = String(file.name || "");
+      if (!name.toLowerCase().endsWith(".npy")) {
+        setStatus("Select an NPY file.", true);
+        return;
+      }
+      try {
+        setStatus("Loading...");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const npy = parseNpy(bytes);
+        const volume = makeVolume(npy, name);
+        state.volume = volume;
+        clearVolume();
+        setupBounds(volume);
+        updateVolumeUi(volume);
+        renderVolume();
+        resetCamera();
+      } catch (error) {
+        console.error(error);
+        setStatus(error?.message || "Failed to load the file.", true);
+      }
+    }
+
+    function bindEvents() {
+      els.fileInput.addEventListener("change", () => loadFile(els.fileInput.files?.[0]));
+      els.resetView.addEventListener("click", resetCamera);
+
+      [
+        "channelSelect", "colorMode", "viewMode", "sliceAxis", "hideZero", "showGrid",
+      ].forEach((id) => {
+        els[id].addEventListener("input", () => {
+          if (id === "channelSelect") syncChannelUi(true);
+          if (id === "sliceAxis") updateSliceSlider();
+          if (id === "colorMode") buildLegend();
+          syncControlLabels();
+          renderVolume();
+          if (id === "viewMode" || id === "sliceAxis") resetCamera();
+        });
+      });
+
+      els.sliceIndex.addEventListener("input", () => {
+        syncControlLabels();
+        renderVolume();
+      });
+
+      const dropTarget = els.dropZone.parentElement;
+      ["dragenter", "dragover"].forEach((type) => {
+        dropTarget.addEventListener(type, (event) => {
+          event.preventDefault();
+          els.dropZone.classList.add("is-dragging");
+        });
+      });
+      ["dragleave", "drop"].forEach((type) => {
+        dropTarget.addEventListener(type, (event) => {
+          event.preventDefault();
+          els.dropZone.classList.remove("is-dragging");
+        });
+      });
+      dropTarget.addEventListener("drop", (event) => {
+        const file = event.dataTransfer?.files?.[0];
+        loadFile(file);
+      });
+    }
+
+    function syncControlLabels() {
+      els.sliceValue.textContent = els.sliceIndex.value;
+    }
+
+    function init() {
+      collectElements();
+      initThree();
+      bindEvents();
+      syncControlLabels();
+      buildLegend();
+      setStatus("Ready.");
+    }
+
+    window.addEventListener("DOMContentLoaded", init);
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11161d;
+      --panel: #1a2029;
+      --panel-2: #202833;
+      --line: #334154;
+      --text: #e8edf4;
+      --muted: #9baabd;
+      --accent: #2fb7d9;
+      --accent-2: #b8d66a;
+      --danger: #ff9a8f;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: 56px minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+      align-items: center;
+      gap: 14px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #151b24;
+      min-width: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .brand strong {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .brand span,
+    .file-meta {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .status {
+      justify-self: end;
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status[data-state="error"] {
+      color: var(--danger);
+    }
+
+    button,
+    .file-button,
+    select,
+    input[type="number"] {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #202935;
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+    }
+
+    button,
+    .file-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover,
+    .file-button:hover {
+      border-color: var(--accent);
+      background: #24303e;
+    }
+
+    .file-button input {
+      display: none;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 260px;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .panel {
+      display: grid;
+      align-content: start;
+      gap: 16px;
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .panel.right {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .section {
+      display: grid;
+      gap: 10px;
+    }
+
+    .section-title {
+      color: #c7d5e7;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label,
+    .check {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    select,
+    input[type="number"] {
+      width: 100%;
+      padding: 0 10px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .range-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 44px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .range-value {
+      color: #c9d8e8;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .viewport {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.025), transparent 34%),
+        #151920;
+    }
+
+    .viewport canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .drop-zone {
+      position: absolute;
+      inset: 10px;
+      z-index: 2;
+      border: 1px dashed transparent;
+      border-radius: 8px;
+      pointer-events: none;
+      transition: border-color 120ms ease, background-color 120ms ease;
+    }
+
+    .drop-zone.is-dragging {
+      border-color: var(--accent);
+      background: rgba(47, 183, 217, 0.08);
+    }
+
+    .info-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .info-row {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      min-width: 0;
+      font-size: 12px;
+    }
+
+    .info-row span:first-child {
+      color: var(--muted);
+    }
+
+    .info-row span:last-child {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: #dbe6f2;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      color: #dbe6f2;
+      font-size: 12px;
+    }
+
+    .swatch {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+    }
+
+    .scalar-bar {
+      grid-column: 1 / -1;
+      height: 18px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 5px;
+      background: linear-gradient(90deg, #30123b, #466be3, #35b779, #f9e721, #7a0403);
+    }
+
+    .legend-range {
+      display: flex;
+      grid-column: 1 / -1;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 940px) {
+      .topbar {
+        grid-template-columns: minmax(0, 1fr);
+        min-height: 128px;
+        align-content: center;
+      }
+
+      .top-actions {
+        justify-content: start;
+      }
+
+      .status {
+        justify-self: start;
+        text-align: left;
+      }
+
+      .workspace {
+        grid-template-columns: 260px minmax(0, 1fr);
+      }
+
+      .panel.right {
+        display: none;
+      }
+    }
+
+    @media (max-width: 700px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        min-height: 100%;
+        height: auto;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .workspace {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(420px, 65vh);
+        min-height: 0;
+      }
+
+      .panel {
+        max-height: 340px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .viewport {
+        min-height: 420px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <strong>StructGeoFlow NPY Viewer</strong>
+        <span id="fileName">No file loaded</span>
+      </div>
+      <div class="top-actions">
+        <label class="file-button">
+          Open .npy
+          <input id="fileInput" type="file" accept=".npy">
+        </label>
+        <button id="resetView" type="button">Reset View</button>
+      </div>
+      <div id="statusText" class="status">Ready.</div>
+    </header>
+
+    <section class="workspace">
+      <aside class="panel">
+        <div class="section">
+          <div class="section-title">Data</div>
+          <div class="field">
+            <label for="channelSelect">Channel</label>
+            <select id="channelSelect" disabled>
+              <option value="0">Channel 0</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="colorMode">Color Mode</label>
+            <select id="colorMode">
+              <option value="semantic">Semantic Labels</option>
+              <option value="scalar">Scalar Range</option>
+            </select>
+          </div>
+          <label class="check">
+            <input id="hideZero" type="checkbox" checked>
+            Hide label/value 0
+          </label>
+        </div>
+
+        <div class="section">
+          <div class="section-title">View</div>
+          <div class="field">
+            <label for="viewMode">Mode</label>
+            <select id="viewMode">
+              <option value="volume">Volume</option>
+              <option value="slice">Slice</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="sliceAxis">Slice Axis</label>
+            <select id="sliceAxis">
+              <option value="x">X</option>
+              <option value="y">Y</option>
+              <option value="z" selected>Z</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="sliceIndex">Slice Index</label>
+            <div class="range-row">
+              <input id="sliceIndex" type="range" min="0" max="0" value="0">
+              <span id="sliceValue" class="range-value">0</span>
+            </div>
+          </div>
+          <label class="check">
+            <input id="showGrid" type="checkbox" checked>
+            Show voxel grid
+          </label>
+        </div>
+      </aside>
+
+      <section class="viewport">
+        <div id="dropZone" class="drop-zone"></div>
+        <canvas id="canvas"></canvas>
+      </section>
+
+      <aside class="panel right">
+        <div class="section">
+          <div class="section-title">Volume</div>
+          <div class="info-grid">
+            <div class="info-row"><span>Shape</span><span id="shapeText">-</span></div>
+            <div class="info-row"><span>Dtype</span><span id="dtypeText">-</span></div>
+            <div class="info-row"><span>Range</span><span id="rangeText">-</span></div>
+            <div class="info-row"><span>Render</span><span id="renderStats">-</span></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Palette</div>
+          <div id="legend" class="legend"></div>
+        </div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

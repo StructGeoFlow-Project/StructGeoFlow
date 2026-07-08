@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: "StructGeoFlow"
+message: "If you use this software, cite the associated Computers & Geosciences manuscript."
+type: software
+authors:
+  - family-names: "StructGeoFlow authors"
+    given-names: ""
+year: 2026
+license: MIT
+repository-code: "https://github.com/StructGeoFlow-Project/StructGeoFlow"

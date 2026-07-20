@@ -22,7 +22,7 @@ Open-source license: MIT for the source code.
 
 Demo data and checkpoint license: Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0). Commercial use of the demo data and pretrained checkpoints requires prior written permission from the authors.
 
-Release version or tag: v0.1.0 after the first public tag is created.
+Release version or tag: v0.1.0.
 
 Included reproducibility assets: README, user instructions, inference source code, model architecture definitions, demo inference entry point, and voxel viewer.
 

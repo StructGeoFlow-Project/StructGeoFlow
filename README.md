@@ -1,95 +1,58 @@
 # StructGeoFlow
 
-StructGeoFlow is a structure-aware latent residual-control workflow for sparse-constrained 3D geological voxel generation. This repository provides the inference code and viewer for the Computers & Geosciences manuscript:
+StructGeoFlow is a structure-aware latent residual-control workflow for sparse-constrained 3D geological voxel generation. This demo release accompanies the Computers & Geosciences manuscript:
 
 > StructGeoFlow: A structure-aware latent residual-control workflow for sparse-constrained 3D geological voxel generation
 
-The release includes the model definitions needed to load the published checkpoints, a unified inference script, and a browser-based `.npy` voxel viewer.
+The repository includes the model definitions, a unified inference script, and a browser-based `.npy` voxel viewer.
 
-## Demo Assets
+## Quick Start
 
-Download the demo assets from the Hugging Face dataset repository, then place them under the repository root:
-
-https://huggingface.co/datasets/snipervx/StructGeoFlow
+Download the [demo data and pretrained checkpoints](https://huggingface.co/datasets/snipervx/StructGeoFlow) and place them under the repository root:
 
 ```text
 dataset/
   model.npy
   fault.npy
 models/
-  vae_3d_dualhead_checkpoint/
-    latest.pth
-  flow_3d_geo/
-    latest.pth
-  flow_3d_geo_controlnet/
-    latest.pth
+  vae_3d_dualhead_checkpoint/latest.pth
+  flow_3d_geo/latest.pth
+  flow_3d_geo_controlnet/latest.pth
 ```
 
-The asset repository also includes `manifest.json` and `checksums.sha256` for file verification.
+The input arrays have shape `[X, Y, Z]`, with each axis at least 128 voxels. `model.npy` contains semantic labels and `fault.npy` contains a binary fault mask. The demo uses proxy geological volumes developed from the same regional modeling context as the study; the source geological model remains proprietary.
 
-The demo data use proxy geological volumes from the same regional modeling context as the study. The original commercial model data are not distributed with this release.
-
-The demo data and pretrained checkpoints are licensed separately under CC BY-NC 4.0 for non-commercial research and educational use.
-
-Expected inputs:
-
-- `dataset/model.npy`: semantic geological labels, shape `[X, Y, Z]`.
-- `dataset/fault.npy`: binary fault mask, shape `[X, Y, Z]`.
-- Each axis should be at least `128` voxels.
-
-## Setup
+Install the dependencies and run inference from the repository root:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-For CUDA inference, install a PyTorch build that matches your local CUDA driver.
-
-## Run Inference
-
-```bash
-python -m compileall -q vae latent_flow
 python latent_flow/infer.py
 ```
 
-By default, the script uses 50 Heun steps and physical scale `4.0`. It writes four unconditional RF samples to `outputs/rf_uncond/` and four ControlNet samples from one shared borehole condition to `outputs/control_borehole/`.
+A CUDA-capable GPU is recommended. Install the PyTorch build appropriate for your CUDA environment when needed.
 
-Generated samples use channel-first layout:
+The default run uses 50 Heun steps and a physical scale of `4.0`. It creates four unconditional RF samples in `outputs/rf_uncond/` and four ControlNet samples from one borehole condition in `outputs/control_borehole/`.
 
-```text
-[3, X, Y, Z]
-```
+## Output
 
-- channel 0: semantic labels.
-- channel 1: fault mask.
-- channel 2: condition voxels. `0` is unknown; `1..8` encode semantic labels `0..7`.
+Generated `.npy` files use channel-first layout `[3, X, Y, Z]`:
 
-For ControlNet outputs, `control_sample_*.npy` and `gt_patch.npy` already include the fault and condition channels.
+- channel 0: semantic labels
+- channel 1: fault mask
+- channel 2: condition voxels (`0` for unknown; `1..8` for semantic labels `0..7`)
 
-## View Results
+ControlNet samples and `gt_patch.npy` include all three channels.
 
-Open `viewer/npy_viewer.html` in a browser and select a generated `.npy` file. The viewer supports full-volume voxel rendering, slices, semantic colors, scalar colors, voxel-grid display, and channel switching.
+## Viewer
 
-The viewer loads Three.js from a CDN, so direct HTML use requires internet access.
-
-## Repository Layout
-
-- `latent_flow/`: RF and ControlNet model definitions, inference utilities, and `infer.py`.
-- `vae/`: VAE model definition used by the released checkpoints.
-- `viewer/`: standalone Three.js `.npy` voxel viewer.
-- `docs/`: code availability notes.
+Open `viewer/npy_viewer.html` in a browser and select a generated `.npy` file. The viewer provides full-volume and slice views, channel switching, semantic and scalar color maps, and optional voxel-grid lines. It loads Three.js from a CDN and therefore requires internet access.
 
 ## License
 
-The source code in this repository is released under the MIT License. See `LICENSE`.
+The source code is released under the [MIT License](LICENSE). The demo data and pretrained checkpoints are released separately under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
 
-The demo data and pretrained model checkpoints hosted at https://huggingface.co/datasets/snipervx/StructGeoFlow are licensed separately under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0). Commercial use of those assets requires prior written permission from the authors.
+## Availability
 
-## Code Availability
-
-Source code repository: https://github.com/StructGeoFlow-Project/StructGeoFlow
-
-The journal-oriented code availability record is in `docs/computer_code_availability.md`.
+- Source code: https://github.com/StructGeoFlow-Project/StructGeoFlow
+- Demo assets: https://huggingface.co/datasets/snipervx/StructGeoFlow
+- Journal code-availability record: [docs/computer_code_availability.md](docs/computer_code_availability.md)

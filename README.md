@@ -53,6 +53,7 @@ The source code is released under the [MIT License](LICENSE). The demo data and 
 
 ## Availability
 
+- Author: Renjun Qian ([qianrenjun@buaa.edu.cn](mailto:qianrenjun@buaa.edu.cn))
 - Source code: https://github.com/StructGeoFlow-Project/StructGeoFlow
 - Demo assets: https://huggingface.co/datasets/snipervx/StructGeoFlow
 - Journal code-availability record: [docs/computer_code_availability.md](docs/computer_code_availability.md)

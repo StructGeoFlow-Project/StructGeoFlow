@@ -4,7 +4,7 @@ Name of code: StructGeoFlow.
 
 Manuscript title: StructGeoFlow: A structure-aware latent residual-control workflow for sparse-constrained 3D geological voxel generation.
 
-Developer and contact: StructGeoFlow manuscript authors; use the corresponding-author contact listed in the manuscript.
+Developer and contact: Renjun Qian, qianrenjun@buaa.edu.cn.
 
 Year first available: 2026.
 
